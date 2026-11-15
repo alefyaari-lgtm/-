@@ -10,6 +10,7 @@ export type SceneObjectId =
   | 'fountain';
 
 export interface MeydanSceneCallbacks {
+  onReady?: () => void;
   onObjectClick: (objectId: SceneObjectId) => void;
 }
 
@@ -87,6 +88,7 @@ export class MeydanScene extends Phaser.Scene {
     this.createSparkleLayer();
 
     this.syncVisualState(this.visualState);
+    this.callbacks.onReady?.();
   }
 
   private drawSkyAndClouds(): void {
@@ -766,6 +768,8 @@ export class MeydanScene extends Phaser.Scene {
   public syncVisualState(nextState: MeydanSceneVisualState): void {
     const wasFixed = this.visualState.fountainFixed;
     this.visualState = nextState;
+    this.input.enabled = !nextState.isPaused;
+    this.tweens.timeScale = nextState.isPaused ? 0 : 1;
 
     const clueToObject: Record<string, SceneObjectId> = {
       basin_low: 'basin',
@@ -840,6 +844,20 @@ export class MeydanScene extends Phaser.Scene {
   }
 
   public update(time: number, delta: number): void {
+    // Hint spotlight ring pulse
+    if (this.visualState.highlightObjectId) {
+      const target = this.interactiveContainers.get(this.visualState.highlightObjectId);
+      if (target) {
+        this.hintPulseTime += Math.min(delta / 1000, 0.05) * 4;
+        const radius = 58 + Math.sin(this.hintPulseTime) * 10;
+        this.hintRing.clear();
+        this.hintRing.lineStyle(5, 0xfde047, 0.92);
+        this.hintRing.strokeCircle(target.x, target.y, radius);
+        this.hintRing.lineStyle(3, 0x14b8a6, 0.8);
+        this.hintRing.strokeCircle(target.x, target.y, radius + 8);
+      }
+    }
+
     if (this.visualState.isPaused) {
       return;
     }
@@ -870,20 +888,6 @@ export class MeydanScene extends Phaser.Scene {
         this.noorakTarget.y + bobOffset,
         dt * 3.5,
       );
-    }
-
-    // Hint spotlight ring pulse
-    if (this.visualState.highlightObjectId) {
-      const target = this.interactiveContainers.get(this.visualState.highlightObjectId);
-      if (target) {
-        this.hintPulseTime += dt * 4;
-        const radius = 58 + Math.sin(this.hintPulseTime) * 10;
-        this.hintRing.clear();
-        this.hintRing.lineStyle(5, 0xfde047, 0.92);
-        this.hintRing.strokeCircle(target.x, target.y, radius);
-        this.hintRing.lineStyle(3, 0x14b8a6, 0.8);
-        this.hintRing.strokeCircle(target.x, target.y, radius + 8);
-      }
     }
 
     // Pipe flowing water pulses + Fountain water arcs when fixed

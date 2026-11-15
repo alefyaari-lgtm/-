@@ -24,7 +24,7 @@ export function createDefaultSaveData(): BrightLandSaveData {
 }
 
 export function loadSaveData(): BrightLandSaveData {
-  if (typeof window === 'undefined' || !window.localStorage) {
+  if (typeof window === 'undefined') {
     return createDefaultSaveData();
   }
 
@@ -39,41 +39,38 @@ export function loadSaveData(): BrightLandSaveData {
       return createDefaultSaveData();
     }
 
-    // Version migration hook for future BrightLand releases
-    if (parsed.schemaVersion !== CURRENT_SAVE_SCHEMA_VERSION) {
-      return {
-        ...createDefaultSaveData(),
-        unlockedRewardIds: Array.isArray(parsed.unlockedRewardIds)
-          ? parsed.unlockedRewardIds
-          : [],
-        cases: parsed.cases && typeof parsed.cases === 'object' ? parsed.cases : {},
-      };
-    }
-
-    return {
-      schemaVersion: CURRENT_SAVE_SCHEMA_VERSION,
-      updatedAtIso: parsed.updatedAtIso ?? new Date().toISOString(),
-      audio: {
-        muted: Boolean(parsed.audio?.muted),
-        volume:
-          typeof parsed.audio?.volume === 'number' &&
-          parsed.audio.volume >= 0 &&
-          parsed.audio.volume <= 1
-            ? parsed.audio.volume
-            : 0.7,
-      },
-      unlockedRewardIds: Array.isArray(parsed.unlockedRewardIds)
-        ? parsed.unlockedRewardIds
-        : [],
-      cases: parsed.cases && typeof parsed.cases === 'object' ? parsed.cases : {},
+    // Unknown schemas are not interpreted as current game progress.
+    if (parsed.schemaVersion !== CURRENT_SAVE_SCHEMA_VERSION) return createDefaultSaveData();
+    const save = createDefaultSaveData();
+    save.updatedAtIso = validDate(parsed.updatedAtIso) ?? save.updatedAtIso;
+    save.audio = {
+      muted: parsed.audio?.muted === true,
+      volume: typeof parsed.audio?.volume === 'number' && Number.isFinite(parsed.audio.volume)
+        ? Math.max(0, Math.min(1, parsed.audio.volume)) : 0.7,
     };
+    const knownRewards = CASE_REGISTRY.flatMap((c) => c.rewards.map((r) => r.id));
+    save.unlockedRewardIds = validIds(parsed.unlockedRewardIds, knownRewards);
+    const cases = parsed.cases;
+    if (cases && typeof cases === 'object' && !Array.isArray(cases)) {
+      for (const caseDef of CASE_REGISTRY) {
+        if (Object.hasOwn(cases, caseDef.id)) {
+          save.cases[caseDef.id] = normalizeCaseProgress(cases[caseDef.id], caseDef);
+          if (save.cases[caseDef.id].phase === 'resolved') {
+            save.unlockedRewardIds = [...new Set([
+              ...save.unlockedRewardIds, ...caseDef.rewards.map((r) => r.id),
+            ])];
+          }
+        }
+      }
+    }
+    return save;
   } catch {
     return createDefaultSaveData();
   }
 }
 
 export function persistSaveData(data: BrightLandSaveData): void {
-  if (typeof window === 'undefined' || !window.localStorage) {
+  if (typeof window === 'undefined') {
     return;
   }
 
@@ -93,23 +90,50 @@ export function getOrCreateCaseProgress(
   saveData: BrightLandSaveData,
   caseDef: CaseDefinition,
 ): CaseProgressState {
-  const existing = saveData.cases[caseDef.id];
-  if (!existing) {
-    return createInitialCaseProgress(caseDef);
-  }
+  return normalizeCaseProgress(saveData.cases[caseDef.id], caseDef);
+}
 
+function validIds(value: unknown, allowed: string[]): string[] {
+  return Array.isArray(value) ? [...new Set(value.filter(
+    (id): id is string => typeof id === 'string' && allowed.includes(id),
+  ))] : [];
+}
+
+function validDate(value: unknown): string | null {
+  return typeof value === 'string' && Number.isFinite(Date.parse(value)) ? value : null;
+}
+
+function counter(value: unknown): number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+
+export function normalizeCaseProgress(value: unknown, caseDef: CaseDefinition): CaseProgressState {
+  const initial = createInitialCaseProgress(caseDef);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return initial;
+  const raw = value as Partial<CaseProgressState>;
+  const clues = validIds(raw.discoveredClueIds, caseDef.clues.map((c) => c.id));
+  const evidence = validIds(raw.selectedEvidenceIds, clues);
+  const hypothesis = caseDef.hypotheses.some((h) => h.id === raw.selectedHypothesisId)
+    ? raw.selectedHypothesisId! : null;
+  let phase = raw.phase ?? 'intro';
+  if (!['intro', 'explore', 'hypothesis', 'fix', 'resolved'].includes(phase)) phase = 'intro';
+  const introStep = Math.min(counter(raw.introStepIndex), caseDef.introDialogue.length);
+  if (phase === 'intro' && introStep >= caseDef.introDialogue.length) phase = 'explore';
+  const allClues = clues.length === caseDef.clues.length;
+  const validReasoning = allClues && hypothesis === caseDef.correctHypothesisId &&
+    caseDef.requiredEvidenceIds.every((id) => evidence.includes(id));
+  if (['hypothesis', 'fix', 'resolved'].includes(phase) && !allClues) phase = 'explore';
+  if (['fix', 'resolved'].includes(phase) && !validReasoning) phase = 'hypothesis';
   return {
-    ...createInitialCaseProgress(caseDef),
-    ...existing,
-    discoveredClueIds: Array.isArray(existing.discoveredClueIds)
-      ? existing.discoveredClueIds
-      : [],
-    inspectedPropIds: Array.isArray(existing.inspectedPropIds)
-      ? existing.inspectedPropIds
-      : [],
-    selectedEvidenceIds: Array.isArray(existing.selectedEvidenceIds)
-      ? existing.selectedEvidenceIds
-      : [],
+    ...initial, caseId: caseDef.id, phase,
+    introStepIndex: phase === 'intro' ? introStep : caseDef.introDialogue.length,
+    discoveredClueIds: clues,
+    inspectedPropIds: validIds(raw.inspectedPropIds, caseDef.nonKeyProps.map((p) => p.id)),
+    selectedHypothesisId: hypothesis, selectedEvidenceIds: evidence,
+    reasoningAttempts: counter(raw.reasoningAttempts), hintsUsedCount: counter(raw.hintsUsedCount),
+    maxHintLevelUsed: Math.min(counter(raw.maxHintLevelUsed), 3),
+    fountainFixed: phase === 'resolved',
+    completedAtIso: phase === 'resolved' ? validDate(raw.completedAtIso) : null,
   };
 }
 
@@ -136,13 +160,16 @@ export function createBrightLandWorldAdapter(
         detectiveProgressPercent: percent,
       };
     },
-    syncCaseCompletion: (_caseId: string, rewardIds: string[]) => {
-      updateSave((prev) => ({
-        ...prev,
-        unlockedRewardIds: Array.from(
-          new Set([...prev.unlockedRewardIds, ...rewardIds]),
-        ),
-      }));
+    syncCaseCompletion: (caseId: string, rewardIds: string[]) => {
+      const caseDef = CASE_REGISTRY.find((c) => c.id === caseId);
+      if (!caseDef) return;
+      updateSave((prev) => {
+        if (getOrCreateCaseProgress(prev, caseDef).phase !== 'resolved') return prev;
+        const allowed = caseDef.rewards.map((r) => r.id);
+        return { ...prev, unlockedRewardIds: [...new Set([
+          ...prev.unlockedRewardIds, ...validIds(rewardIds, allowed),
+        ])] };
+      });
     },
   };
 }

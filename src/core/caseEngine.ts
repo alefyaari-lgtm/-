@@ -149,10 +149,7 @@ export function enterHypothesisPhase(
   progress: CaseProgressState,
   caseDef: CaseDefinition,
 ): CaseProgressState {
-  if (!areAllCluesDiscovered(progress, caseDef)) {
-    return progress;
-  }
-  if (progress.phase === 'fix' || progress.phase === 'resolved') {
+  if (progress.phase !== 'explore' || !areAllCluesDiscovered(progress, caseDef)) {
     return progress;
   }
   return {
@@ -167,6 +164,10 @@ export function evaluateReasoning(
   hypothesisId: string,
   selectedEvidenceIds: string[],
 ): ReasoningEvaluationResult {
+  if (progress.phase !== 'hypothesis' || !areAllCluesDiscovered(progress, caseDef)) {
+    return { isValid: false, isHypothesisCorrect: false, isEvidenceSufficient: false,
+      feedbackFa: 'ابتدا سرنخ‌ها را کامل کن و وارد مرحله فرضیه شو.', progress };
+  }
   const hypothesis = caseDef.hypotheses.find((h) => h.id === hypothesisId);
   if (!hypothesis) {
     return {
@@ -238,7 +239,7 @@ export function completeFixAction(
   progress: CaseProgressState,
   completedAtIso: string = new Date().toISOString(),
 ): CaseProgressState {
-  if (progress.phase !== 'fix' && progress.phase !== 'resolved') {
+  if (progress.phase !== 'fix') {
     return progress;
   }
   return {
