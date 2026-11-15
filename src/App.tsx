@@ -49,8 +49,6 @@ export default function App() {
 
   const [saveData, setSaveData] = useState<BrightLandSaveData>(() => {
     const loaded = loadSaveData();
-    soundSystem.setMuted(loaded.audio.muted);
-    soundSystem.setVolume(loaded.audio.volume);
     return loaded;
   });
 
@@ -64,8 +62,9 @@ export default function App() {
     return 'title';
   });
 
-  const [caseProgress, setCaseProgress] = useState<CaseProgressState>(() =>
-    getOrCreateCaseProgress(saveData, caseDef),
+  const caseProgress = useMemo(
+    () => getOrCreateCaseProgress(saveData, caseDef),
+    [saveData, caseDef],
   );
 
   // Active sub-modals during 'playing'
@@ -95,22 +94,15 @@ export default function App() {
     persistSaveData(saveData);
   }, [saveData]);
 
-  // Helper to update both caseProgress and saveData cleanly
+  // Persisted progress is the single source of truth.
   const updateCaseProgress = useCallback(
     (updater: (prev: CaseProgressState) => CaseProgressState) => {
-      setCaseProgress((prev) => {
-        const next = updater(prev);
-        setSaveData((prevSave) => ({
-          ...prevSave,
-          cases: {
-            ...prevSave.cases,
-            [caseDef.id]: next,
-          },
-        }));
-        return next;
+      setSaveData((prevSave) => {
+        const next = updater(getOrCreateCaseProgress(prevSave, caseDef));
+        return { ...prevSave, cases: { ...prevSave.cases, [caseDef.id]: next } };
       });
     },
-    [caseDef.id],
+    [caseDef],
   );
 
   const worldAdapter = useMemo(
@@ -138,12 +130,9 @@ export default function App() {
 
   // Audio handlers
   const handleToggleMute = useCallback(() => {
+    soundSystem.playTap();
     setSaveData((prev) => {
       const nextMuted = !prev.audio.muted;
-      soundSystem.setMuted(nextMuted);
-      if (!nextMuted) {
-        soundSystem.playTap();
-      }
       return {
         ...prev,
         audio: {
@@ -164,6 +153,26 @@ export default function App() {
         volume: nextVolume,
       },
     }));
+  }, []);
+
+  useEffect(() => {
+    soundSystem.setMuted(saveData.audio.muted);
+    soundSystem.setVolume(saveData.audio.volume);
+  }, [saveData.audio.muted, saveData.audio.volume]);
+
+  useEffect(() => {
+    if (shellState === 'playing' && caseProgress.fountainFixed && !saveData.audio.muted) {
+      soundSystem.startWaterAmbient();
+    } else soundSystem.stopWaterAmbient();
+    return () => soundSystem.stopWaterAmbient();
+  }, [shellState, caseProgress.fountainFixed, saveData.audio.muted]);
+
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.hidden) setShellState((prev) => prev === 'playing' ? 'paused' : prev);
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
   }, []);
 
   // Start / Restart handlers
@@ -193,7 +202,6 @@ export default function App() {
       document.activeElement.blur();
     }
     const fresh = createInitialCaseProgress(caseDef);
-    setCaseProgress(fresh);
     setSaveData((prev) => ({
       ...prev,
       cases: {
@@ -220,7 +228,10 @@ export default function App() {
   // Keyboard shortcuts (Enter/Space on title, P/Escape pause, M mute)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.repeat || (e.target instanceof HTMLElement &&
+        e.target.closest('input, textarea, select, [contenteditable=true]'))) return;
       if (shellState === 'title') {
+        if (e.target instanceof HTMLElement && e.target.closest('button')) return;
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
           handleStartContinue();
@@ -257,8 +268,38 @@ export default function App() {
   }, [caseDef, updateCaseProgress]);
 
   const anyModalOpen = Boolean(
-    discoveryModal || notebookOpen || hypothesisOpen || valvePuzzleOpen,
+    discoveryModal || notebookOpen || hypothesisOpen || valvePuzzleOpen || hintLevel !== null || celebrationStep !== null,
   );
+
+  useEffect(() => {
+    const topDialog = () => Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"]'))
+      .filter((el) => el.getClientRects().length > 0).at(-1);
+    const previousFocus = document.activeElement;
+    const focusable = (dialog: HTMLElement) => Array.from(dialog.querySelectorAll<HTMLElement>(
+      'button:not(:disabled), input:not(:disabled), [tabindex="0"]',
+    )).filter((el) => el.getClientRects().length > 0);
+    const frame = requestAnimationFrame(() => {
+      const dialog = topDialog();
+      if (dialog) focusable(dialog)[0]?.focus();
+    });
+    const onTab = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab') return;
+      const dialog = topDialog();
+      if (!dialog) return;
+      const controls = focusable(dialog);
+      const index = controls.indexOf(document.activeElement as HTMLElement);
+      if (index === -1 || (!event.shiftKey && index === controls.length - 1) || (event.shiftKey && index === 0)) {
+        event.preventDefault();
+        controls[event.shiftKey ? controls.length - 1 : 0]?.focus();
+      }
+    };
+    window.addEventListener('keydown', onTab);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener('keydown', onTab);
+      if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
+    };
+  }, [shellState, discoveryModal, notebookOpen, hypothesisOpen, valvePuzzleOpen, hintLevel]);
 
   // Scene Object Click Handler
   const handleSceneObjectClick = useCallback(
@@ -298,7 +339,7 @@ export default function App() {
       const matchingClue = caseDef.clues.find((c) => c.sceneObjectId === objectId);
       if (matchingClue) {
         const result = inspectClue(caseProgress, caseDef, matchingClue.id);
-        updateCaseProgress(() => result.progress);
+        updateCaseProgress((prev) => inspectClue(prev, caseDef, matchingClue.id).progress);
         setToast(null);
         setHintLevel(null);
 
@@ -320,7 +361,7 @@ export default function App() {
       const matchingProp = caseDef.nonKeyProps.find((p) => p.sceneObjectId === objectId);
       if (matchingProp) {
         const result = inspectNonKeyProp(caseProgress, caseDef, matchingProp.id);
-        updateCaseProgress(() => result.progress);
+        updateCaseProgress((prev) => inspectNonKeyProp(prev, caseDef, matchingProp.id).progress);
         soundSystem.playPropReaction();
         void voiceOverAdapter.playClip(matchingProp.voiceClipKey);
 
@@ -357,12 +398,10 @@ export default function App() {
   const handleRequestHint = useCallback(() => {
     soundSystem.playTap();
     setToast(null);
-    setHintLevel((prev) => {
-      const next: HintLevel = prev === null ? 1 : prev === 1 ? 2 : 3;
-      updateCaseProgress((cp) => recordHintUsage(cp, next));
-      return next;
-    });
-  }, [updateCaseProgress]);
+    const next: HintLevel = hintLevel === null ? 1 : hintLevel === 1 ? 2 : 3;
+    updateCaseProgress((cp) => recordHintUsage(cp, next));
+    setHintLevel(next);
+  }, [hintLevel, updateCaseProgress]);
 
   const handleSelectHintLevel = useCallback(
     (level: HintLevel) => {
@@ -381,7 +420,7 @@ export default function App() {
         hypothesisId,
         evidenceIds,
       );
-      updateCaseProgress(() => evalResult.progress);
+      updateCaseProgress((prev) => evaluateReasoning(prev, caseDef, hypothesisId, evidenceIds).progress);
 
       if (evalResult.isValid) {
         soundSystem.playClueDiscovery();
@@ -409,6 +448,7 @@ export default function App() {
   }, [caseDef.fixInstructionFa]);
 
   const handleValveOpened = useCallback(() => {
+    if (caseProgress.phase !== 'fix' || shellState !== 'playing') return;
     setValvePuzzleOpen(false);
     setHintLevel(null);
     setToast(null);
@@ -416,14 +456,21 @@ export default function App() {
     soundSystem.playWaterFlowStart();
     soundSystem.playVictoryFanfare();
 
-    updateCaseProgress((prev) => completeFixAction(prev));
-    worldAdapter.syncCaseCompletion(
-      caseDef.id,
-      caseDef.rewards.map((r) => r.id),
-    );
+    const completedAtIso = new Date().toISOString();
+    setSaveData((prev) => {
+      const progress = getOrCreateCaseProgress(prev, caseDef);
+      if (progress.phase !== 'fix') return prev;
+      return {
+        ...prev,
+        cases: { ...prev.cases, [caseDef.id]: completeFixAction(progress, completedAtIso) },
+        unlockedRewardIds: Array.from(new Set([
+          ...prev.unlockedRewardIds, ...caseDef.rewards.map((r) => r.id),
+        ])),
+      };
+    });
 
     setCelebrationStep(0);
-  }, [caseDef.id, caseDef.rewards, updateCaseProgress, worldAdapter]);
+  }, [caseDef, caseProgress.phase, shellState]);
 
   const handleAdvanceCelebration = useCallback(() => {
     soundSystem.playTap();
@@ -479,7 +526,7 @@ export default function App() {
 
       {shellState !== 'title' && (
         <div className="relative w-full h-full">
-          {/* Isolated Phaser 3 2D Courtyard Canvas */}
+          {/* Existing Phaser Canvas courtyard */}
           <PhaserGameHost
             visualState={sceneVisualState}
             pointerDisabled={shellState !== 'playing' || anyModalOpen}
@@ -487,7 +534,7 @@ export default function App() {
           />
 
           {/* Accessible Screen-Reader / Keyboard Courtyard Object Controls */}
-          {shellState === 'playing' && caseProgress.phase !== 'intro' && (
+          {shellState === 'playing' && !anyModalOpen && caseProgress.phase !== 'intro' && (
             <div className="sr-only" aria-label="اشیای قابل بررسی در میدان روشن">
               <button type="button" onClick={() => handleSceneObjectClick('basin')}>
                 بررسی حوض فواره
@@ -641,10 +688,15 @@ export default function App() {
           )}
 
           {/* Hypothesis & Supporting Evidence Modal */}
-          {shellState === 'playing' && hypothesisOpen && !notebookOpen && (
+          {shellState === 'playing' && hypothesisOpen && (
+            <div hidden={notebookOpen || hintLevel !== null}>
             <HypothesisModal
               caseDef={caseDef}
               discoveredClueIds={caseProgress.discoveredClueIds}
+              accepted={caseProgress.phase === 'fix'}
+              onDraftChange={(hypothesisId, evidenceIds) => updateCaseProgress((prev) => ({
+                ...prev, selectedHypothesisId: hypothesisId || null, selectedEvidenceIds: evidenceIds,
+              }))}
               initialHypothesisId={caseProgress.selectedHypothesisId}
               initialEvidenceIds={caseProgress.selectedEvidenceIds}
               onSubmitReasoning={handleSubmitReasoning}
@@ -653,7 +705,6 @@ export default function App() {
                 setNotebookOpen(true);
               }}
               onRequestHint={() => {
-                setHypothesisOpen(false);
                 handleRequestHint();
               }}
               onSuccessProceed={handleSuccessProceedToFix}
@@ -662,6 +713,7 @@ export default function App() {
                 setHypothesisOpen(false);
               }}
             />
+            </div>
           )}
 
           {/* Valve Turning Mini-Interaction */}

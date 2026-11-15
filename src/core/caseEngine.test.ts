@@ -134,3 +134,55 @@ test('fix action completes the case and 3-tier hint adapts to current state', ()
   assert.equal(resolved.fountainFixed, true);
   assert.equal(resolved.completedAtIso, '2026-11-15T10:00:00.000Z');
 });
+
+for (const phase of ['intro', 'explore', 'fix', 'resolved'] as const) {
+  test(`reasoning cannot bypass or regress ${phase}`, () => {
+    const progress = { ...createInitialCaseProgress(SILENT_FOUNTAIN_CASE), phase,
+      discoveredClueIds: SILENT_FOUNTAIN_CASE.clues.map((c) => c.id) };
+    const result = evaluateReasoning(progress, SILENT_FOUNTAIN_CASE, 'hyp_valve_closed', ['valve_closed']);
+    assert.equal(result.isValid, false);
+    assert.strictEqual(result.progress, progress);
+  });
+}
+
+test('intro cannot jump directly to hypothesis even with injected clues', () => {
+  const progress = { ...createInitialCaseProgress(SILENT_FOUNTAIN_CASE),
+    discoveredClueIds: SILENT_FOUNTAIN_CASE.clues.map((c) => c.id) };
+  assert.strictEqual(enterHypothesisPhase(progress, SILENT_FOUNTAIN_CASE), progress);
+});
+
+test('unknown hypothesis and undiscovered evidence do not advance case', () => {
+  const progress = { ...createInitialCaseProgress(SILENT_FOUNTAIN_CASE), phase: 'hypothesis' as const,
+    discoveredClueIds: ['basin_low'] };
+  for (const hypothesis of ['unknown', 'hyp_valve_closed']) {
+    const result = evaluateReasoning(progress, SILENT_FOUNTAIN_CASE, hypothesis, ['valve_closed']);
+    assert.equal(result.isValid, false);
+    assert.strictEqual(result.progress, progress);
+  }
+});
+
+test('completion is idempotent and unavailable before fix', () => {
+  const initial = createInitialCaseProgress(SILENT_FOUNTAIN_CASE);
+  assert.strictEqual(completeFixAction(initial), initial);
+  const done = completeFixAction({ ...initial, phase: 'fix' }, '2026-11-15T10:00:00.000Z');
+  assert.strictEqual(completeFixAction(done, '2026-11-16T10:00:00.000Z'), done);
+});
+
+for (const phase of ['intro', 'explore', 'hypothesis', 'fix', 'resolved'] as const) {
+  test(`all hint levels preserve ${phase} and reasoning draft`, () => {
+    const progress = { ...createInitialCaseProgress(SILENT_FOUNTAIN_CASE), phase,
+      discoveredClueIds: phase === 'intro' || phase === 'explore' ? [] : SILENT_FOUNTAIN_CASE.clues.map((c) => c.id),
+      selectedHypothesisId: 'hyp_pipe_broken', selectedEvidenceIds: ['pipe_intact'] };
+    for (const level of [1, 2, 3] as const) {
+      const hint = getActiveHint(SILENT_FOUNTAIN_CASE, progress, level);
+      assert.ok(hint.messageFa.length);
+      assert.equal(hint.targetType, phase === 'intro' || phase === 'explore' ? 'clue' : phase);
+      const next = recordHintUsage(progress, level);
+      assert.equal(next.phase, phase);
+      assert.equal(next.hintsUsedCount, 1);
+      assert.equal(next.maxHintLevelUsed, level);
+      assert.equal(next.selectedHypothesisId, progress.selectedHypothesisId);
+      assert.deepEqual(next.selectedEvidenceIds, progress.selectedEvidenceIds);
+    }
+  });
+}

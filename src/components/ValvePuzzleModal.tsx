@@ -1,5 +1,5 @@
 import { Droplets, RotateCw, X } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { NoorakAvatar } from '../characters/NoorakAvatar';
 
 interface ValvePuzzleModalProps {
@@ -20,6 +20,12 @@ export function ValvePuzzleModal({
   const rotationDeg = turnsCompleted * 90;
   const isOpened = turnsCompleted >= REQUIRED_TURNS;
 
+  useEffect(() => {
+    if (!isOpened) return;
+    const timer = window.setTimeout(onValveOpened, 420);
+    return () => window.clearTimeout(timer);
+  }, [isOpened, onValveOpened]);
+
   const handleTurn = () => {
     if (isOpened) {
       return;
@@ -27,11 +33,7 @@ export function ValvePuzzleModal({
     const next = turnsCompleted + 1;
     setTurnsCompleted(next);
     onTurnStep(next / REQUIRED_TURNS);
-    if (next >= REQUIRED_TURNS) {
-      window.setTimeout(() => {
-        onValveOpened();
-      }, 420);
-    }
+
   };
 
   return (

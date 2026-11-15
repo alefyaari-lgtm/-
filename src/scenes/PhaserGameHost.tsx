@@ -32,6 +32,7 @@ export function PhaserGameHost({
     }
 
     const scene = new MeydanScene({
+      onReady: () => scene.syncVisualState(latestStateRef.current),
       onObjectClick: (objectId) => {
         callbackRef.current(objectId);
       },
@@ -57,14 +58,11 @@ export function PhaserGameHost({
       },
     });
 
-    const syncTimer = window.setTimeout(() => {
-      if (scene?.scene && scene.scene.isActive()) {
-        scene.syncVisualState(latestStateRef.current);
-      }
-    }, 200);
+    const resizeObserver = new ResizeObserver(() => game.scale.refresh());
+    resizeObserver.observe(mountEl);
 
     return () => {
-      window.clearTimeout(syncTimer);
+      resizeObserver.disconnect();
       sceneRef.current = null;
       game.destroy(true);
     };

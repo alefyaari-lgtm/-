@@ -6,6 +6,8 @@ import { ClueIllustration } from './ClueIllustration';
 
 interface HypothesisModalProps {
   caseDef: CaseDefinition;
+  accepted: boolean;
+  onDraftChange: (hypothesisId: string, evidenceIds: string[]) => void;
   discoveredClueIds: string[];
   initialHypothesisId: string | null;
   initialEvidenceIds: string[];
@@ -21,6 +23,8 @@ interface HypothesisModalProps {
 
 export function HypothesisModal({
   caseDef,
+  accepted,
+  onDraftChange,
   discoveredClueIds,
   initialHypothesisId,
   initialEvidenceIds,
@@ -30,16 +34,12 @@ export function HypothesisModal({
   onSuccessProceed,
   onClose,
 }: HypothesisModalProps) {
-  const [selectedHypothesisId, setSelectedHypothesisId] = useState<string>(
-    initialHypothesisId ?? '',
-  );
-  const [selectedEvidenceIds, setSelectedEvidenceIds] = useState<string[]>(
-    initialEvidenceIds,
-  );
+  const selectedHypothesisId = initialHypothesisId ?? '';
+  const selectedEvidenceIds = initialEvidenceIds;
   const [feedback, setFeedback] = useState<{
     isValid: boolean;
     messageFa: string;
-  } | null>(null);
+  } | null>(accepted ? { isValid: true, messageFa: caseDef.correctReasoningFeedbackFa } : null);
 
   const discoveredClues = caseDef.clues.filter((clue) =>
     discoveredClueIds.includes(clue.id),
@@ -47,8 +47,8 @@ export function HypothesisModal({
 
   const toggleEvidence = (clueId: string) => {
     setFeedback(null);
-    setSelectedEvidenceIds((prev) =>
-      prev.includes(clueId) ? prev.filter((id) => id !== clueId) : [...prev, clueId],
+    onDraftChange(selectedHypothesisId,
+      selectedEvidenceIds.includes(clueId) ? selectedEvidenceIds.filter((id) => id !== clueId) : [...selectedEvidenceIds, clueId],
     );
   };
 
@@ -130,7 +130,7 @@ export function HypothesisModal({
                   type="button"
                   disabled={Boolean(feedback?.isValid)}
                   onClick={() => {
-                    setSelectedHypothesisId(hyp.id);
+                    onDraftChange(hyp.id, selectedEvidenceIds);
                     setFeedback(null);
                   }}
                   className={`w-full text-right flex items-center justify-between gap-3 min-h-13 px-4 py-3 rounded-2xl border-2 font-bold text-sm sm:text-base transition-colors cursor-pointer ${
