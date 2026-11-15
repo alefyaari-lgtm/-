@@ -1,0 +1,6 @@
+{
+  "name": "کارآگاه نورک — راز فواره خاموش",
+  "description": "بازی ماجراجویی معمایی و کشف سرنخ کارآگاه نورک در سرزمین روشن برای کودکان ۶ تا ۹ سال",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
